@@ -16,6 +16,7 @@ function loadSound(name){
     const a = new Audio();
     a.preload='auto';
     a.src = `./Sounds/${name}.${ext}`;
+    a.addEventListener('error', (e)=>console.warn(`Audio load failed: ${name}.${ext}`, e));
     if(a.canPlayType(`audio/${ext}`)) return a;
   }
   return null;
@@ -29,9 +30,17 @@ function applyVolume(){
   if(notifySnd) notifySnd.volume = volume;
 }
 applyVolume();
+document.addEventListener('pointerdown', ()=>{
+  [diceSnd,notifySnd].forEach(s=>{
+    if(s) s.play().then(()=>{s.pause(); s.currentTime=0;}).catch(err=>console.warn('Audio unlock failed', err));
+  });
+},{once:true});
 function playSnd(a){
   if(!a || volume<=0) return;
-  try{ a.currentTime=0; a.volume=volume; a.play(); }catch(e){}
+  a.currentTime=0;
+  a.volume=volume;
+  const p = a.play();
+  if(p) p.catch(err=>console.warn('Audio play failed', err));
 }
 
 
@@ -154,6 +163,8 @@ const state = {
   chance:[],
   chest:[],
   lastAction:null,
+  isRolling:false,
+  hasRolled:false,
 };
 
 const START_CASH = 1500;
@@ -230,6 +241,8 @@ function startGame(){
   state.chance = shuffle(CHANCE_CARDS);
   state.chest = shuffle(CHEST_CARDS);
   state.started = true;
+  state.isRolling = false;
+  state.hasRolled = false;
   $('#setup').classList.add('hidden');
   $('#controls').classList.remove('hidden');
   $('#build-panel').classList.add('hidden');
@@ -484,70 +497,78 @@ document.addEventListener('keydown', (e)=>{
 });
 
 function onRoll(){
-  const p = currentPlayer();
-  if(!p || p.bankrupt) return;
-  if(p.inJail){
-    // Try for doubles, else option to pay 50 (auto-pay on 3rd try)
-    const d1 = 1 + Math.floor(Math.random()*6);
-    const d2 = 1 + Math.floor(Math.random()*6);
-    state.dice = [d1,d2];
-    updateTurnIndicator();
-    playSnd(diceSnd);
-    if(d1===d2){
-      p.inJail = false;
-      p.jailTries = 0;
-      state.doublesCount = 0;
-      logMsg(`🎲 ${p.name} خرج من السجن بالدبل (${d1}+${d2}) ويتحرك ${d1+d2} خانات.`);
-      movePlayer(p, d1+d2, true);
-    }else{
-      p.jailTries++;
-      if(p.getOutCards>0){
-        // auto use card
-        p.getOutCards--;
+  if(state.isRolling || state.hasRolled) return;
+  state.isRolling = true;
+  $('#btn-roll').disabled = true;
+  try{
+    const p = currentPlayer();
+    if(!p || p.bankrupt) return;
+    if(p.inJail){
+      // Try for doubles, else option to pay 50 (auto-pay on 3rd try)
+      const d1 = 1 + Math.floor(Math.random()*6);
+      const d2 = 1 + Math.floor(Math.random()*6);
+      state.dice = [d1,d2];
+      state.hasRolled = true;
+      updateTurnIndicator();
+      playSnd(diceSnd);
+      if(d1===d2){
         p.inJail = false;
         p.jailTries = 0;
         state.doublesCount = 0;
-        logMsg(`🔑 ${p.name} استخدم بطاقة الخروج من السجن.`);
-        // still no move this turn; allow roll again?
-        enableEndOnly();
-      }else if(p.jailTries>=3){
-        // auto pay 50
-        changeCash(p, -50);
-        p.inJail=false; p.jailTries=0; state.doublesCount = 0;
-        logMsg(`💸 ${p.name} دفع 50$ للخروج بعد 3 محاولات. تحرك الآن.`);
+        logMsg(`🎲 ${p.name} خرج من السجن بالدبل (${d1}+${d2}) ويتحرك ${d1+d2} خانات.`);
+        movePlayer(p, d1+d2, true);
       }else{
-        logMsg(`🚫 ${p.name} فشل في الخروج (${d1}+${d2}). محاولات: ${p.jailTries}/3`);
+        p.jailTries++;
+        if(p.getOutCards>0){
+          // auto use card
+          p.getOutCards--;
+          p.inJail = false;
+          p.jailTries = 0;
+          state.doublesCount = 0;
+          logMsg(`🔑 ${p.name} استخدم بطاقة الخروج من السجن.`);
+          enableEndOnly();
+        }else if(p.jailTries>=3){
+          // auto pay 50
+          changeCash(p, -50);
+          p.inJail=false; p.jailTries=0; state.doublesCount = 0;
+          logMsg(`💸 ${p.name} دفع 50$ للخروج بعد 3 محاولات. تحرك الآن.`);
+        }else{
+          logMsg(`🚫 ${p.name} فشل في الخروج (${d1}+${d2}). محاولات: ${p.jailTries}/3`);
+          enableEndOnly();
+          return;
+        }
+        if(!p.inJail){
+          const steps = d1 + d2;
+          movePlayer(p, steps, true);
+        }
+      }
+      return;
+    }
+
+    const d1 = 1 + Math.floor(Math.random()*6);
+    const d2 = 1 + Math.floor(Math.random()*6);
+    state.dice = [d1,d2];
+    state.hasRolled = true;
+    updateTurnIndicator();
+    playSnd(diceSnd);
+    const sum = d1 + d2;
+
+    if(d1===d2){
+      state.doublesCount++;
+      logMsg(`🎲 ${p.name} حصل على دبل (${d1}+${d2}) ويتحرك ${sum}. الدبل المتتالي: ${state.doublesCount}`);
+      if(state.doublesCount>=3){
+        sendToJail(p, '3 دبلات متتالية');
         enableEndOnly();
         return;
       }
-      if(!p.inJail){
-        const steps = d1 + d2;
-        movePlayer(p, steps, true);
-      }
+    }else{
+      state.doublesCount=0;
     }
-    return;
+
+    movePlayer(p, sum, true);
+  } finally {
+    state.isRolling = false;
   }
-
-  const d1 = 1 + Math.floor(Math.random()*6);
-  const d2 = 1 + Math.floor(Math.random()*6);
-  state.dice = [d1,d2];
-  updateTurnIndicator();
-  playSnd(diceSnd);
-  const sum = d1 + d2;
-
-  if(d1===d2){
-    state.doublesCount++;
-    logMsg(`🎲 ${p.name} حصل على دبل (${d1}+${d2}) ويتحرك ${sum}. الدبل المتتالي: ${state.doublesCount}`);
-    if(state.doublesCount>=3){
-      sendToJail(p, '3 دبلات متتالية');
-      enableEndOnly();
-      return;
-    }
-  }else{
-    state.doublesCount=0;
-  }
-
-  movePlayer(p, sum, true);
 }
 
 function movePlayer(p, steps, fromRoll=false){
@@ -673,6 +694,7 @@ function endTurn(){
     logMsg(`♻️ دبل — يحصل ${currentPlayer().name} على رمية إضافية.`);
     $('#btn-roll').disabled = false;
     $('#btn-end').disabled = true;
+    state.hasRolled = false;
     return;
   }
 
@@ -695,6 +717,8 @@ function endTurn(){
 
   state.doublesCount = 0;
   state.dice=[0,0];
+  state.hasRolled = false;
+  $('#btn-roll').disabled = false;
   updateTurnIndicator();
   playSnd(notifySnd);
   renderSidebar();
